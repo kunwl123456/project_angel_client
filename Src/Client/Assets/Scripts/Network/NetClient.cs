@@ -147,25 +147,33 @@ namespace Network
         /// </summary>
         /// <param name="retryTimes"></param>
         /// <returns></returns>
+        /// 连接函数，传入参数为重连参数，可作为断线重连的机制
         public void Connect(int times = DEF_TRY_CONNECT_TIMES)
         {
+            //1、先做校验逻辑，若正在链接
             if (this.connecting)
             {
                 return;
             }
 
+            //若已经链接上了，则断开
             if (this.clientSocket != null)
             {
                 this.clientSocket.Close();
             }
+
+            //2.若连接地址是默认的地址，还没初始化，则抛出错误
             if (this.address == default(IPEndPoint))
             {
                 throw new Exception("Please Init first.");
             }
+
+            //3.打印日志并且设置参数
             Debug.Log("DoConnect");
             this.connecting = true;
             this.lastSendTime = 0;
 
+            //4.开始连接服务器
             this.DoConnect();
         }
 
@@ -220,6 +228,7 @@ namespace Network
         }
 
         //send a Protobuf message
+        //连接完成后就可以发消息了
         public void SendMessage(NetMessage message)
         {
             if (!running)
@@ -227,6 +236,7 @@ namespace Network
                 return;
             }
 
+            //1、若没连接，就再连接一次
             if (!this.Connected)
             {
                 this.receiveBuffer.Position = 0;
@@ -237,8 +247,10 @@ namespace Network
                 return;
             }
 
+            //2.给发送队列填充消息节点
             sendQueue.Enqueue(message);
-        
+            
+            //3.设置发送消息的时间
             if (this.lastSendTime == 0)
             {
                 this.lastSendTime = Time.time;
@@ -247,6 +259,7 @@ namespace Network
 
         void DoConnect()
         {
+            //1.实际开始连接服务器，打印日志
             Debug.Log("NetClient.DoConnect on " + this.address.ToString());
             try
             {
@@ -255,13 +268,15 @@ namespace Network
                     this.clientSocket.Close();
                 }
 
-
+                //2.设置TCP连接，并设置为阻塞状态（InterNetwork表示IPV4地址）
                 this.clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
                 this.clientSocket.Blocking = true;
 
+                //3.打印日志并调用异步的方式开始连接，用wait超时等待NetConnectTimeout时间
                 Debug.Log(string.Format("Connect[{0}] to server {1}", this.retryTimes, this.address) + "\n");
                 IAsyncResult result = this.clientSocket.BeginConnect(this.address, null, null);
                 bool success = result.AsyncWaitHandle.WaitOne(NetConnectTimeout);
+                //4.连接成功则结束连接
                 if (success)
                 {
                     this.clientSocket.EndConnect(result);
@@ -269,6 +284,7 @@ namespace Network
             }
             catch(SocketException ex)
             {
+                //若被服务器拒绝连接了
                 if(ex.SocketErrorCode == SocketError.ConnectionRefused)
                 {
                     this.CloseConnection(NET_ERROR_FAIL_TO_CONNECT);
@@ -277,11 +293,14 @@ namespace Network
             }
             catch (Exception e)
             {
+                //常规的异常
                 Debug.Log("DoConnect Exception:" + e.ToString() + "\n");
             }
 
+            //判断连接状态是否成功
             if (this.clientSocket.Connected)
             {
+                //这里设置为false，是想之后客户端和服务器通讯是非阻塞的连接
                 this.clientSocket.Blocking = false;
                 this.RaiseConnected(0, "Success");
             }
@@ -293,6 +312,7 @@ namespace Network
                     this.RaiseConnected(1, "Cannot connect to server");
                 }
             }
+            //标志连接结束
             this.connecting = false;
         }
 
@@ -317,6 +337,7 @@ namespace Network
             return false;
         }
 
+        //接受消息
         bool ProcessRecv()
         {
             bool ret = false;
@@ -326,6 +347,7 @@ namespace Network
                 {
                     Debug.Log("this.clientSocket.Blocking = true\n");
                 }
+                //判断是否有错误
                 bool error = this.clientSocket.Poll(0, SelectMode.SelectError);
                 if (error)
                 {
@@ -334,9 +356,11 @@ namespace Network
                     return false;
                 }
 
+                //判断数据是否有读事件
                 ret = this.clientSocket.Poll(0, SelectMode.SelectRead);
                 if (ret)
                 {
+                    //接受数据，接受完成之后，把数据放到接受缓冲区
                     int n = this.clientSocket.Receive(this.receiveBuffer.GetBuffer(), 0, this.receiveBuffer.Capacity, SocketFlags.None);
                     if (n <= 0)
                     {
@@ -344,6 +368,7 @@ namespace Network
                         return false;
                     }
 
+                    //把数据丢到packagehandler里面去
                     this.packageHandler.ReceiveData(this.receiveBuffer.GetBuffer(), 0, n);
 
                 }
@@ -416,12 +441,15 @@ namespace Network
             return true;
         }
 
+        //消息分发器
         void ProceeMessage()
         {
+            //分发消息
             MessageDistributer.Instance.Distribute();
         }
 
         //Update need called once per frame
+        //每帧都执行
         public void Update()
         {
             if (!running)
@@ -429,12 +457,16 @@ namespace Network
                 return;
             }
 
+            //1、保持连接，要求达到断线重连
             if (this.KeepConnect())
             {
+                //2、先看到有没有数据，有数据先收数据
                 if (this.ProcessRecv())
                 {
+                    //3.接受过程中可能会断线，所以接受过程中要判断有没有连接着
                     if (this.Connected)
                     {
+                        //4.先发送消息，后处理收到的消息
                         this.ProcessSend();
                         this.ProceeMessage();
                     }
